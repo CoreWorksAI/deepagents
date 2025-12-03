@@ -190,6 +190,40 @@ agent = create_deep_agent(
 )
 ```
 
+### `summarization_middleware_class`
+
+Deep Agents include automatic context summarization when the conversation history gets too long. By default, this uses `SummarizationMiddleware` from LangChain. You can provide a custom subclass to add logging, metrics, or custom behavior when summarization occurs.
+
+```python
+import logging
+from langchain.agents.middleware.summarization import SummarizationMiddleware
+from langchain.agents.middleware.types import AgentState
+from langgraph.runtime import Runtime
+from deepagents import create_deep_agent
+
+logger = logging.getLogger(__name__)
+
+class LoggingSummarizationMiddleware(SummarizationMiddleware):
+    """SummarizationMiddleware that logs when context compaction occurs."""
+
+    async def abefore_model(self, state: AgentState, runtime: Runtime):
+        messages = state["messages"]
+        total_tokens = self.token_counter(messages)
+
+        if self._should_summarize(messages, total_tokens):
+            logger.warning(
+                f"[SUMMARIZATION] Context compaction triggered: "
+                f"{len(messages)} messages, ~{total_tokens} tokens"
+            )
+
+        return await super().abefore_model(state, runtime)
+
+agent = create_deep_agent(
+    model="anthropic:claude-sonnet-4-20250514",
+    summarization_middleware_class=LoggingSummarizationMiddleware,
+)
+```
+
 ### `subagents`
 
 A main feature of Deep Agents is their ability to spawn subagents. You can specify custom subagents that your agent can hand off work to in the subagents parameter. Sub agents are useful for context quarantine (to help not pollute the overall context of the main agent) as well as custom instructions.
