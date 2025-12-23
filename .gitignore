@@ -215,3 +215,4 @@ __marimo__/
 .idea
 .venv_test/
 __pycache__/
+examples/
