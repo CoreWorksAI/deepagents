@@ -95,7 +95,11 @@ in the same way you would any LangGraph agent.
 
 **Long-term Memory**
 
- Extend agents with persistent memory across threads using LangGraph’s Store. Agents can save and retrieve information from previous conversations.
+ Extend agents with persistent memory across threads using LangGraph's Store. Agents can save and retrieve information from previous conversations.
+
+**Persistent Key-Value Memory**
+
+ Enable `MemoryMiddleware` for simple key-value storage that persists across conversation turns. Uses Redis by default with InMemory fallback. Tools: `save_memory`, `get_memory`, `list_memories`.
 
 ## Customizing Deep Agents
 
@@ -361,7 +365,7 @@ Deep Agents are built with a modular middleware architecture. As a reminder, Dee
 - A filesystem for storing context and long-term memories
 - The ability to spawn subagents
 
-Each of these features is implemented as separate middleware. When you create a deep agent with `create_deep_agent`, we automatically attach **TodoListMiddleware**, **FilesystemMiddleware** and **SubAgentMiddleware** to your agent.
+Each of these features is implemented as separate middleware. When you create a deep agent with `create_deep_agent`, we automatically attach **TodoListMiddleware**, **FilesystemMiddleware** and **SubAgentMiddleware** to your agent. You can also enable **MemoryMiddleware** for persistent key-value storage with `enable_memory=True`.
 
 Middleware is a composable concept, and you can choose to add as many or as few middleware to an agent depending on your use case. That means that you can also use any of the aforementioned middleware independently!
 
@@ -418,6 +422,54 @@ agent = create_agent(
     ],
 )
 ```
+
+### MemoryMiddleware
+
+When agents need to persist information across conversation turns without the complexity of a full filesystem, **MemoryMiddleware** provides a simpler key-value memory interface. This is useful for storing state, context, or results that need to survive across invocations.
+
+MemoryMiddleware provides three tools:
+- **save_memory**: Save a dictionary under a key
+- **get_memory**: Retrieve previously saved data by key
+- **list_memories**: List all available memory keys
+
+```python
+from langchain.agents import create_agent
+from deepagents import MemoryMiddleware
+
+# MemoryMiddleware can be enabled via create_deep_agent
+agent = create_deep_agent(
+    model="anthropic:claude-sonnet-4-20250514",
+    enable_memory=True,  # Adds save_memory, get_memory, list_memories tools
+)
+
+# Or used directly with create_agent for custom setups
+agent = create_agent(
+    model="anthropic:claude-sonnet-4-20250514",
+    middleware=[
+        MemoryMiddleware(
+            namespace_key="conversation_id",  # Config key for namespace isolation
+            system_prompt="Use memory tools to...",  # Optional custom system prompt
+        ),
+    ],
+)
+```
+
+**Storage Backends:**
+- **Redis** (default): Uses `REDIS_URL` environment variable with 7-day TTL
+- **InMemory** (fallback): Used when Redis is unavailable (data lost on restart)
+
+```python
+# Custom store implementation
+from deepagents.middleware.memory import MemoryMiddleware, InMemoryStore
+
+custom_store = InMemoryStore()  # Or your own MemoryStoreProtocol implementation
+agent = create_agent(
+    model="anthropic:claude-sonnet-4-20250514",
+    middleware=[MemoryMiddleware(store=custom_store)],
+)
+```
+
+**Namespace Isolation:** Each conversation gets its own memory namespace based on the `conversation_id` in the config, ensuring memories don't leak between conversations.
 
 ### SubAgentMiddleware
 
