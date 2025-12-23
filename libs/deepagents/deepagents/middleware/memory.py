@@ -191,7 +191,15 @@ def _save_memory_tool_generator(
 ) -> BaseTool:
     """Generate the save_memory tool."""
 
-    async def save_memory(
+    def sync_save_memory(
+        key: str,
+        data: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
+        """Sync placeholder - not used, async version is called."""
+        return ""
+
+    async def async_save_memory(
         key: str,
         data: dict[str, Any],
         runtime: ToolRuntime,
@@ -207,8 +215,8 @@ def _save_memory_tool_generator(
     return StructuredTool.from_function(
         name="save_memory",
         description=SAVE_MEMORY_DESCRIPTION,
-        func=lambda key, data: None,  # Sync placeholder
-        coroutine=save_memory,
+        func=sync_save_memory,
+        coroutine=async_save_memory,
     )
 
 
@@ -218,7 +226,14 @@ def _get_memory_tool_generator(
 ) -> BaseTool:
     """Generate the get_memory tool."""
 
-    async def get_memory(
+    def sync_get_memory(
+        key: str,
+        runtime: ToolRuntime,
+    ) -> dict[str, Any]:
+        """Sync placeholder - not used, async version is called."""
+        return {}
+
+    async def async_get_memory(
         key: str,
         runtime: ToolRuntime,
     ) -> dict[str, Any]:
@@ -233,8 +248,8 @@ def _get_memory_tool_generator(
     return StructuredTool.from_function(
         name="get_memory",
         description=GET_MEMORY_DESCRIPTION,
-        func=lambda key: {},  # Sync placeholder
-        coroutine=get_memory,
+        func=sync_get_memory,
+        coroutine=async_get_memory,
     )
 
 
@@ -244,7 +259,13 @@ def _list_memories_tool_generator(
 ) -> BaseTool:
     """Generate the list_memories tool."""
 
-    async def list_memories(
+    def sync_list_memories(
+        runtime: ToolRuntime,
+    ) -> list[str]:
+        """Sync placeholder - not used, async version is called."""
+        return []
+
+    async def async_list_memories(
         runtime: ToolRuntime,
     ) -> list[str]:
         store = await store_factory()
@@ -257,8 +278,8 @@ def _list_memories_tool_generator(
     return StructuredTool.from_function(
         name="list_memories",
         description=LIST_MEMORIES_DESCRIPTION,
-        func=lambda: [],  # Sync placeholder
-        coroutine=list_memories,
+        func=sync_list_memories,
+        coroutine=async_list_memories,
     )
 
 
