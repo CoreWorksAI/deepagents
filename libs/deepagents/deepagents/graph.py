@@ -19,6 +19,7 @@ from langgraph.types import Checkpointer
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.mem0_memory import Mem0MemoryMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
@@ -56,6 +57,7 @@ def create_deep_agent(
     cache: BaseCache | None = None,
     enable_filesystem: bool = True,
     enable_memory: bool = False,
+    enable_mem0: bool = False,
     enable_todos: bool = True,
     summarization_middleware_class: type[SummarizationMiddleware] | None = None,
 ) -> CompiledStateGraph:
@@ -101,6 +103,9 @@ def create_deep_agent(
             works with in-memory data and doesn't need filesystem access.
         enable_memory: Whether to enable memory tools (save_memory, get_memory, list_memories).
             Defaults to False. Uses Redis for persistence with InMemory fallback.
+        enable_mem0: Whether to enable Mem0 semantic memory tools (remember, recall,
+            forget, list_all_memories). Defaults to False. Requires ``pip install mem0ai``.
+            Provides automatic fact extraction, semantic search, and deduplication.
         enable_todos: Whether to enable the TodoListMiddleware for task tracking.
             Defaults to True. Set to False for simple single-task agents.
         summarization_middleware_class: Custom SummarizationMiddleware subclass to use
@@ -143,6 +148,10 @@ def create_deep_agent(
     if enable_memory:
         deepagent_middleware.append(MemoryMiddleware())
 
+    # Optional: Mem0MemoryMiddleware for semantic memory
+    if enable_mem0:
+        deepagent_middleware.append(Mem0MemoryMiddleware())
+
     # Build subagent default middleware
     subagent_middleware = [
         summarization_class(
@@ -161,6 +170,9 @@ def create_deep_agent(
     if enable_memory:
         idx = (1 if enable_todos else 0) + (1 if enable_filesystem else 0)
         subagent_middleware.insert(idx, MemoryMiddleware())
+    if enable_mem0:
+        idx = (1 if enable_todos else 0) + (1 if enable_filesystem else 0) + (1 if enable_memory else 0)
+        subagent_middleware.insert(idx, Mem0MemoryMiddleware())
 
     # SubAgentMiddleware for spawning sub-agents
     deepagent_middleware.append(
