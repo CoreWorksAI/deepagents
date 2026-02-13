@@ -101,6 +101,10 @@ in the same way you would any LangGraph agent.
 
  Enable `MemoryMiddleware` for simple key-value storage that persists across conversation turns. Uses Redis by default with InMemory fallback. Tools: `save_memory`, `get_memory`, `list_memories`.
 
+**Semantic Memory (Mem0)**
+
+ Enable `Mem0MemoryMiddleware` for intelligent memory with automatic fact extraction, semantic search, and deduplication via [Mem0](https://github.com/mem0ai/mem0). Tools: `remember`, `recall`, `forget`, `list_all_memories`.
+
 ## Customizing Deep Agents
 
 There are several parameters you can pass to `create_deep_agent` to create your own custom deep agent.
@@ -365,7 +369,7 @@ Deep Agents are built with a modular middleware architecture. As a reminder, Dee
 - A filesystem for storing context and long-term memories
 - The ability to spawn subagents
 
-Each of these features is implemented as separate middleware. When you create a deep agent with `create_deep_agent`, we automatically attach **TodoListMiddleware**, **FilesystemMiddleware** and **SubAgentMiddleware** to your agent. You can also enable **MemoryMiddleware** for persistent key-value storage with `enable_memory=True`.
+Each of these features is implemented as separate middleware. When you create a deep agent with `create_deep_agent`, we automatically attach **TodoListMiddleware**, **FilesystemMiddleware** and **SubAgentMiddleware** to your agent. You can also enable **MemoryMiddleware** for persistent key-value storage with `enable_memory=True`, or **Mem0MemoryMiddleware** for semantic memory with `enable_mem0=True`.
 
 Middleware is a composable concept, and you can choose to add as many or as few middleware to an agent depending on your use case. That means that you can also use any of the aforementioned middleware independently!
 
@@ -470,6 +474,141 @@ agent = create_agent(
 ```
 
 **Namespace Isolation:** Each conversation gets its own memory namespace based on the `conversation_id` in the config, ensuring memories don't leak between conversations.
+
+### Mem0MemoryMiddleware
+
+When agents need **semantic memory** — automatic fact extraction, similarity search, and deduplication — **Mem0MemoryMiddleware** provides an intelligent memory layer powered by [Mem0](https://github.com/mem0ai/mem0). Unlike the key-value `MemoryMiddleware`, this middleware understands the *meaning* of what it stores.
+
+Mem0MemoryMiddleware provides four tools:
+- **remember**: Store information — Mem0 automatically extracts facts and deduplicates
+- **recall**: Search memories by semantic similarity (not just exact keys)
+- **forget**: Remove a specific memory by ID
+- **list_all_memories**: View all stored memories
+
+```python
+from deepagents import create_deep_agent
+
+# Quick start — just flip the flag
+agent = create_deep_agent(
+    enable_mem0=True,  # Adds remember, recall, forget, list_all_memories tools
+)
+
+# Invoke with user scoping (memories persist per user across conversations)
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "I prefer dark mode and Python for backend work"}]},
+    config={"configurable": {"user_id": "alice", "conversation_id": "conv-1"}},
+)
+```
+
+#### Setup & Requirements
+
+```bash
+pip install mem0ai
+```
+
+Mem0 requires an LLM for fact extraction and an embedding model for semantic search. By default it uses OpenAI:
+
+```bash
+export OPENAI_API_KEY=sk-...     # Required: for fact extraction + embeddings
+```
+
+For a custom vector store or graph store backend, pass `mem0_config`:
+
+```python
+from deepagents.middleware.mem0_memory import Mem0MemoryMiddleware
+
+agent = create_deep_agent(
+    middleware=[Mem0MemoryMiddleware(
+        mem0_config={
+            "vector_store": {
+                "provider": "qdrant",
+                "config": {"host": "localhost", "port": 6333},
+            },
+            "graph_store": {
+                "provider": "neo4j",
+                "config": {
+                    "url": "bolt://localhost:7687",
+                    "username": "neo4j",
+                    "password": "password",
+                },
+            },
+        },
+    )],
+)
+```
+
+#### How Prompt Injection Works
+
+When the middleware is active, it injects a system prompt section that teaches the agent about the four memory tools and when to use them. The injection happens in `wrap_model_call` / `awrap_model_call`:
+
+```
+[Your system_prompt]
+
+## Semantic Memory Tools `remember`, `recall`, `forget`, `list_all_memories`
+
+You have access to semantic memory powered by Mem0...
+- **remember**: Store facts, preferences, or context...
+- **recall**: Search memory by meaning...
+- **forget**: Remove outdated or incorrect memories by ID...
+- **list_all_memories**: View everything stored in memory.
+```
+
+You can override this with a custom prompt:
+
+```python
+Mem0MemoryMiddleware(system_prompt="Your custom memory instructions here")
+```
+
+#### Memory Scoping
+
+Memories are scoped via the `configurable` dict passed at invocation time:
+
+| Scope | Config Key | Persists Across | Use Case |
+|-------|-----------|-----------------|----------|
+| **User** | `user_id` | All conversations for that user | Preferences, personal context |
+| **Agent** | `agent_id` | All users for that agent | Shared agent knowledge |
+| **Session** | `conversation_id` | Single conversation only | Ephemeral session context |
+
+```python
+result = agent.invoke(
+    {"messages": [...]},
+    config={"configurable": {
+        "user_id": "alice",           # User-scoped memories
+        "agent_id": "research-bot",   # Agent-scoped memories
+        "conversation_id": "conv-42", # Session-scoped memories
+    }},
+)
+```
+
+#### Using Alongside Key-Value MemoryMiddleware
+
+Both middlewares can coexist — they use different tool names and serve complementary purposes:
+
+```python
+agent = create_deep_agent(
+    enable_memory=True,  # save_memory, get_memory, list_memories (key-value)
+    enable_mem0=True,     # remember, recall, forget, list_all_memories (semantic)
+)
+```
+
+| | MemoryMiddleware | Mem0MemoryMiddleware |
+|---|---|---|
+| **Storage model** | Key-value (Redis/InMemory) | Vector + Graph + KV |
+| **How you store** | `save_memory(key="prefs", data={...})` | `remember("User prefers dark mode")` |
+| **How you retrieve** | `get_memory(key="prefs")` — exact key | `recall("UI preferences")` — semantic search |
+| **Extraction** | Manual (agent structures data) | Automatic (LLM extracts facts) |
+| **Deduplication** | None | Automatic |
+
+#### Custom Client for Testing
+
+For unit tests or environments without Mem0 infrastructure, use the built-in mock:
+
+```python
+from deepagents.middleware.mem0_memory import Mem0MemoryMiddleware, InMemoryMem0Client
+
+# InMemoryMem0Client does substring matching instead of semantic search
+middleware = Mem0MemoryMiddleware(client=InMemoryMem0Client())
+```
 
 ### SubAgentMiddleware
 
