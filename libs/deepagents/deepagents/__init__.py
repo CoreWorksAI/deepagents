@@ -5,6 +5,7 @@ from deepagents.graph import create_deep_agent
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.memory_kv import MemoryKVMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 
 __all__ = [
@@ -12,6 +13,7 @@ __all__ = [
     "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
     "FilesystemMiddleware",
+    "MemoryKVMiddleware",
     "MemoryMiddleware",
     "SubAgent",
     "SubAgentMiddleware",

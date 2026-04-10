@@ -30,6 +30,7 @@ from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.memory_kv import MemoryKVMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
@@ -38,7 +39,10 @@ from deepagents.middleware.subagents import (
     SubAgent,
     SubAgentMiddleware,
 )
-from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    create_summarization_middleware,
+)
 
 BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -123,6 +127,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    enable_filesystem: bool = True,
+    enable_todos: bool = True,
+    enable_memory: bool = False,
+    summarization_middleware_class: type[SummarizationMiddleware] | None = None,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     """Create a Deep Agent.
 
@@ -279,6 +287,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         cache: The cache to use for the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
+        enable_filesystem: Whether to enable filesystem tools (ls, read_file,
+            write_file, edit_file, glob, grep, execute). Defaults to True.
+            Set to False for agents that work with in-memory data only.
+        enable_todos: Whether to enable TodoListMiddleware. Defaults to True.
+            Set to False for simple single-task agents.
+        enable_memory: Whether to enable persistent KV memory tools
+            (save_memory, get_memory, list_memories). Defaults to False.
+            Uses Redis (REDIS_URL env) with InMemory fallback.
+        summarization_middleware_class: Custom SummarizationMiddleware subclass.
+            When provided, used instead of the default for both the main agent
+            and subagents. Useful for adding logging on context compaction.
 
     Returns:
         A configured Deep Agent.
@@ -290,18 +309,49 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     model = get_default_model() if model is None else resolve_model(model)
     backend = backend if backend is not None else StateBackend()
 
+    def _make_summarization(m: BaseChatModel) -> AgentMiddleware:
+        """Build summarization middleware, using custom class if provided."""
+        if summarization_middleware_class is not None:
+            return summarization_middleware_class(model=m, backend=backend)
+        return create_summarization_middleware(m, backend)
+
+    def _build_base_middleware(
+        m: BaseChatModel,
+        *,
+        extra_skills: list[str] | None = None,
+        include_cache: bool = True,
+    ) -> list[AgentMiddleware[Any, Any, Any]]:
+        """Build the standard middleware stack respecting enable_* toggles.
+
+        Ordering: TodoList → Skills → Filesystem → MemoryKV → Summarization
+        → PatchToolCalls [→ AnthropicCache if include_cache].
+
+        Args:
+            m: Model for summarization middleware.
+            extra_skills: Subagent-specific skills (overrides global skills).
+            include_cache: Whether to append AnthropicPromptCachingMiddleware.
+                Set to False for the main agent where cache must go after
+                user middleware.
+        """
+        stack: list[AgentMiddleware[Any, Any, Any]] = []
+        if enable_todos:
+            stack.append(TodoListMiddleware())
+        src = extra_skills if extra_skills is not None else skills
+        if src:
+            stack.append(SkillsMiddleware(backend=backend, sources=src))
+        if enable_filesystem:
+            stack.append(FilesystemMiddleware(backend=backend))
+        if enable_memory:
+            stack.append(MemoryKVMiddleware())
+        stack.extend([_make_summarization(m), PatchToolCallsMiddleware()])
+        if include_cache:
+            # "ignore" silently skips cache-control header injection for
+            # non-Anthropic models, so this can be added unconditionally.
+            stack.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+        return stack
+
     # Build general-purpose subagent with default middleware stack
-    gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend),
-        create_summarization_middleware(model, backend),
-        PatchToolCallsMiddleware(),
-    ]
-    if skills is not None:
-        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    # "ignore" silently skips cache-control header injection for non-Anthropic
-    # models, so this middleware can be added unconditionally.
-    gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    gp_middleware = _build_base_middleware(model)
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
         "model": model,
@@ -316,30 +366,20 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     async_subagents: list[AsyncSubAgent] = []
     for spec in subagents or []:
         if "graph_id" in spec:
-            # Then spec is an AsyncSubAgent
             async_subagents.append(cast("AsyncSubAgent", spec))
             continue
         if "runnable" in spec:
-            # CompiledSubAgent - use as-is
             inline_subagents.append(spec)
         else:
-            # SubAgent - fill in defaults and prepend base middleware
-            subagent_model = spec.get("model", model)
-            subagent_model = resolve_model(subagent_model)
-
-            # Build middleware: base stack + skills (if specified) + user's middleware
-            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                TodoListMiddleware(),
-                FilesystemMiddleware(backend=backend),
-                create_summarization_middleware(subagent_model, backend),
-                PatchToolCallsMiddleware(),
-            ]
-            subagent_skills = spec.get("skills")
-            if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
-            subagent_middleware.extend(spec.get("middleware", []))
-            # "ignore" skips caching for non-Anthropic models (see comment above).
-            subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+            subagent_model = resolve_model(spec.get("model", model))
+            # Custom subagents only get skills if they explicitly specify them.
+            # Pass [] (not None) when unset so _build_base_middleware doesn't
+            # fall back to the parent's global skills.
+            subagent_mw = _build_base_middleware(
+                subagent_model,
+                extra_skills=spec.get("skills") or [],
+            )
+            subagent_mw.extend(spec.get("middleware", []))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
 
@@ -347,47 +387,33 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 **spec,
                 "model": subagent_model,
                 "tools": spec.get("tools", tools or []),
-                "middleware": subagent_middleware,
+                "middleware": subagent_mw,
             }
             if subagent_interrupt_on is not None:
                 processed_spec["interrupt_on"] = subagent_interrupt_on
             inline_subagents.append(processed_spec)
 
     # If an agent with general purpose name already exists in subagents, then don't add it
-    # This is how you overwrite/configure general purpose subagent
     if not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
-        # Add a general purpose subagent if it doesn't exist yet
         inline_subagents.insert(0, general_purpose_spec)
 
-    # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-    ]
-    if skills is not None:
-        deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    deepagent_middleware.extend(
-        [
-            FilesystemMiddleware(backend=backend),
-            SubAgentMiddleware(
-                backend=backend,
-                subagents=inline_subagents,
-            ),
-            create_summarization_middleware(model, backend),
-            PatchToolCallsMiddleware(),
-        ]
+    # Build main agent middleware stack.
+    # Same base as subagents (respects enable_* toggles) but without
+    # AnthropicCache — that goes after user middleware in the tail.
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = _build_base_middleware(
+        model, include_cache=False,
     )
+    # SubAgentMiddleware goes after the base tools, before summarization.
+    # Summarization is at [-2] (Summarization, PatchToolCalls), insert before it.
+    summ_idx = len(deepagent_middleware) - 2
+    deepagent_middleware.insert(summ_idx, SubAgentMiddleware(backend=backend, subagents=inline_subagents))
 
     if async_subagents:
-        # Async here means that we run these subagents in a non-blocking manner.
-        # Currently this supports agents deployed via LangSmith deployments.
         deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
-
     if middleware:
         deepagent_middleware.extend(middleware)
-    # Caching + memory after all other middleware so memory updates don't
-    # invalidate the Anthropic prompt cache prefix.
-    # "ignore" skips caching for non-Anthropic models (see general-purpose
-    # subagent comment above).
+    # Tail: cache after user middleware so memory updates don't invalidate
+    # the Anthropic prompt cache prefix.
     deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))

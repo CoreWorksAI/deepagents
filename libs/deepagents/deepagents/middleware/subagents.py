@@ -361,7 +361,14 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(subagent_state)
+        # Propagate callbacks (streaming, tracing) and configurable (thread_id)
+        # from the parent, but NOT recursion_limit or metadata which belong to
+        # the parent graph.
+        child_config = {
+            "callbacks": runtime.config.get("callbacks"),
+            "configurable": runtime.config.get("configurable"),
+        }
+        result = subagent.invoke(subagent_state, config=child_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
@@ -376,7 +383,11 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(subagent_state)
+        child_config = {
+            "callbacks": runtime.config.get("callbacks"),
+            "configurable": runtime.config.get("configurable"),
+        }
+        result = await subagent.ainvoke(subagent_state, config=child_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(
