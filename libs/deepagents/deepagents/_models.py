@@ -88,6 +88,10 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     """
     if isinstance(model, BaseChatModel):
         return model
+    # Handle Runnable wrappers (e.g., RunnableWithFallbacks from .with_fallbacks())
+    # These are not BaseChatModel but wrap one. Return as-is since they're callable.
+    if not isinstance(model, str):
+        return model
     if model.startswith("openai:"):
         return init_chat_model(model, use_responses_api=True)
     if model.startswith("openrouter:"):
