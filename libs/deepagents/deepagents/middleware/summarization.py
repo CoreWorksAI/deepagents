@@ -178,11 +178,12 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
             If the model has a profile with `max_input_tokens`, uses
             fraction-based settings. Otherwise, uses fixed token/message counts.
     """
+    profile = getattr(model, "profile", None)
     has_profile = (
-        model.profile is not None
-        and isinstance(model.profile, dict)
-        and "max_input_tokens" in model.profile
-        and isinstance(model.profile["max_input_tokens"], int)
+        profile is not None
+        and isinstance(profile, dict)
+        and "max_input_tokens" in profile
+        and isinstance(profile["max_input_tokens"], int)
     )
 
     if has_profile:
@@ -1121,8 +1122,9 @@ def create_summarization_middleware(
     """
     from langchain.chat_models import BaseChatModel as RuntimeBaseChatModel  # noqa: PLC0415
 
-    if not isinstance(model, RuntimeBaseChatModel):
-        msg = "`create_summarization_middleware` expects `model` to be a `BaseChatModel` instance."
+    # Accept BaseChatModel or Runnable wrappers (e.g., RunnableWithFallbacks from .with_fallbacks())
+    if isinstance(model, str):
+        msg = "`create_summarization_middleware` expects a model instance, not a string."
         raise TypeError(msg)
 
     defaults = compute_summarization_defaults(model)
