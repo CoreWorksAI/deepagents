@@ -181,6 +181,27 @@ class _SaveMemoryInput(BaseModel):
     data: dict[str, Any] = Field(..., description="Dictionary payload to persist.")
 
 
+class _StrictSaveMemoryInput(BaseModel):
+    """Strict variant of save_memory's schema. Opt-in via ``strict_data=True``.
+
+    Rejects empty ``data`` dicts at the Pydantic boundary so a model cannot
+    reserve a memory slot under a meaningful-looking key without actually
+    writing a payload. Useful for callers that want a hard fence against
+    speculative "bookmark" writes.
+    """
+
+    key: str = Field(..., description="Unique identifier for the memory entry.")
+    data: dict[str, Any] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Dictionary payload to persist. MUST contain at least one key — "
+            "empty dicts are rejected so a model cannot reserve a memory "
+            "slot without writing a concrete value."
+        ),
+    )
+
+
 class _GetMemoryInput(BaseModel):
     """Schema for the get_memory tool (runtime is injected separately)."""
 
@@ -199,8 +220,16 @@ class _ListMemoriesInput(BaseModel):
 def _build_tools(
     store_factory: Callable[[], Awaitable[MemoryStoreProtocol]],
     namespace_key: str,
+    *,
+    strict_data: bool = False,
 ) -> list[BaseTool]:
-    """Build the three memory tools."""
+    """Build the three memory tools.
+
+    When ``strict_data`` is True, save_memory's args_schema uses the
+    strict variant that rejects empty ``data`` dicts. Default False
+    preserves the existing lax contract.
+    """
+    save_schema = _StrictSaveMemoryInput if strict_data else _SaveMemoryInput
 
     async def save_memory(key: str, data: dict[str, Any], runtime: ToolRuntime) -> str:
         """Save data to persistent memory."""
@@ -245,7 +274,7 @@ def _build_tools(
             description="Save data to persistent memory.\n\nArgs:\n    key: Unique identifier\n    data: Dictionary to save",
             coroutine=save_memory,
             infer_schema=False,
-            args_schema=_SaveMemoryInput,
+            args_schema=save_schema,
         ),
         StructuredTool.from_function(
             name="get_memory",
@@ -274,6 +303,8 @@ class MemoryKVMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         store: Custom store. If None, auto-detects Redis (REDIS_URL) / InMemory.
         namespace_key: Config key for namespace isolation (default: "conversation_id").
         system_prompt: Custom system prompt override.
+        strict_data: When True, save_memory rejects empty ``data`` dicts at
+            the schema layer. Default False preserves existing lax behavior.
     """
 
     def __init__(
@@ -282,6 +313,7 @@ class MemoryKVMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         store: MemoryStoreProtocol | None = None,
         namespace_key: str = "conversation_id",
         system_prompt: str | None = None,
+        strict_data: bool = False,
     ) -> None:
         self._store = store
         self._store_initialized = store is not None
@@ -297,7 +329,7 @@ class MemoryKVMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                         self._store_initialized = True
             return self._store
 
-        self.tools = _build_tools(store_factory, namespace_key)
+        self.tools = _build_tools(store_factory, namespace_key, strict_data=strict_data)
 
     def wrap_model_call(
         self,
